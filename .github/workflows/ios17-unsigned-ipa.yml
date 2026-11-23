@@ -18,7 +18,7 @@ permissions:
 jobs:
   ipa:
     if: github.repository == 'hikki-fan/t3code'
-    runs-on: macos-26
+    runs-on: xcode-27  # Xcode 27.x image; upstream builds with Xcode 27.1
     timeout-minutes: 120
     env:
       APP_VARIANT: production
@@ -38,8 +38,10 @@ jobs:
       - name: Select Xcode
         run: |
           ls -d /Applications/Xcode*.app || true
-          # Prefer the newest 27.x, else the newest 26.x.
-          xcode="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)"
+          # Upstream (eas.json) builds with Xcode 27.1; prefer it, else the newest 27.x, else 26.x.
+          xcode=""
+          [ -d /Applications/Xcode_27.1.app ] && xcode=/Applications/Xcode_27.1.app
+          [ -n "$xcode" ] || xcode="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)"
           [ -n "$xcode" ] || xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
           [ -n "$xcode" ] || { echo "::error::No Xcode 26+/27+ on this runner"; exit 1; }
           sudo xcode-select -s "$xcode/Contents/Developer"
@@ -51,6 +53,7 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version-file: package.json
+          package-manager-cache: false
 
       - name: Enable corepack
         run: |
