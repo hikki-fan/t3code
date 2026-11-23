@@ -47,7 +47,7 @@ export const RelayDeviceRegistrationRequest = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   platform: RelayAgentAwarenessPlatform,
-  iosMajorVersion: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(18))),
+  iosMajorVersion: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(17))),
   androidApiLevel: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(24))),
   appVersion: Schema.optional(TrimmedNonEmptyString),
   // APNs topic must match the variant's bundle id; development-signed builds use sandbox tokens.
@@ -72,7 +72,7 @@ export const RelayClientDeviceRecord = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   platform: RelayAgentAwarenessPlatform,
-  iosMajorVersion: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(18))),
+  iosMajorVersion: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(17))),
   androidApiLevel: Schema.optional(Schema.NullOr(Schema.Int)),
   appVersion: Schema.NullOr(TrimmedNonEmptyString),
   notifications: Schema.Struct({
@@ -100,7 +100,7 @@ export const RelayListDevicesResponseV1 = Schema.Struct({
     Schema.Struct({
       ...RelayClientDeviceRecord.fields,
       platform: Schema.Literal("ios"),
-      iosMajorVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(18)),
+      iosMajorVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(17)),
     }),
   ),
 });

@@ -275,7 +275,7 @@ function iosMajorVersion(): number {
     return Math.floor(version);
   }
   const major = Number.parseInt(version.split(".")[0] ?? "", 10);
-  return Number.isFinite(major) ? major : 18;
+  return Number.isFinite(major) ? major : 17;
 }
 
 const nativePushTokenRegistration = Effect.fn("remoteRegistration.nativePushTokenRegistration")(

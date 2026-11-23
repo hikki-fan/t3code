@@ -163,3 +163,40 @@ vp run eas:android:dev
 vp run eas:android:preview:dev
 vp run eas:android:preview
 ```
+
+## iOS 17 fork notes
+
+This fork (`hikki-fan/t3code`, branch `ios17-compat`) lowers the iOS minimum from 18.0 to 17.0 so
+the app can be built and installed on iOS 17 devices. 本分支把 iOS 最低版本从 18.0 降到 17.0，
+以便在 iOS 17 设备上自行编译安装。
+
+What changed / 改动:
+
+- `app.config.ts`: `expo-build-properties` `ios.deploymentTarget` `"18.0"` → `"17.0"`.
+- Local native module podspecs (`t3-native-controls`, `t3-web-socket`, `t3-preview-tunnel`,
+  `t3-voice-transcription`) now declare iOS 17.0. Their Swift code already gates newer APIs
+  (iOS 26 / 27.1) with `#available`; nothing in them needs iOS 18.
+- `packages/contracts/src/relay.ts`: relay device schemas accept `iosMajorVersion >= 17`.
+- Widget and share extensions keep the Expo plugin default (16.4).
+
+Build on a Mac with a recent Xcode (Xcode 26 or newer; the native code uses the iOS 26 SDK) and a
+free Apple ID / Personal Team. 在装有较新 Xcode（26 及以上）的 Mac 上，用个人免费 Apple ID 编译：
+
+```bash
+cd apps/mobile
+T3CODE_IOS_PERSONAL_TEAM=1 \
+T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.hikkifan.t3code \
+vp run ios:release
+```
+
+Caveats / 注意事项:
+
+- Do not use the official bundle id `com.t3tools.t3code`; use your own reverse-DNS id.
+  不要使用官方 bundle id `com.t3tools.t3code`。
+- Free Apple ID signing certificates expire after 7 days; rebuild/reinstall weekly.
+  免费 Apple ID 签名 7 天后过期，需要每周重新安装。
+- Personal Team builds omit the widget and share extensions, push notifications, and native Sign in
+  with Apple. 个人团队构建不包含小组件、分享扩展、推送和 Sign in with Apple。
+- The official T3 Connect relay is not changed by this fork and may still reject iOS 17 device
+  registration (push / Live Activities). Pairing over LAN or Tailscale works without the relay.
+  官方 T3 Connect 中继服务器可能仍拒绝 iOS 17 设备注册；局域网或 Tailscale 配对不受影响。
