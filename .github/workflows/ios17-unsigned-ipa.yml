@@ -1,0 +1,219 @@
+# Fork-only: builds an unsigned (ldid fakesigned) Release IPA of the iOS 17 branch for TrollStore.
+name: iOS 17 unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios17-compat]
+    paths-ignore:
+      - "**/*.md"
+
+concurrency:
+  group: ios17-unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  ipa:
+    if: github.repository == 'hikki-fan/t3code'
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      APP_VARIANT: production
+      T3CODE_IOS_PERSONAL_TEAM: "1"
+      T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID: com.hikkifan.t3code
+      # Keep the fork's JS: never pull the official OTA bundle.
+      T3CODE_MOBILE_UPDATES_ENABLED: "0"
+      MOBILE_VERSION_POLICY: appVersion
+      EXPO_NO_GIT_STATUS: "1"
+      EXPO_NO_TELEMETRY: "1"
+      CI: "1"
+      NODE_OPTIONS: --max-old-space-size=8192
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Select Xcode
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          # Prefer the newest 27.x, else the newest 26.x.
+          xcode="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$xcode" ] || xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$xcode" ] || { echo "::error::No Xcode 26+/27+ on this runner"; exit 1; }
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+          echo "- Xcode: \`$(basename "$xcode")\`" >> "$GITHUB_STEP_SUMMARY"
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: package.json
+
+      - name: Enable corepack
+        run: |
+          npm install --global corepack@latest
+          corepack enable
+          pnpm --version
+
+      - name: Install mobile dependencies
+        run: pnpm install --frozen-lockfile --filter=@t3tools/mobile...
+
+      - name: Build tools
+        run: |
+          command -v pod || sudo gem install cocoapods --no-document
+          pod --version
+          brew install ldid
+          ldid 2>&1 | head -2 || true
+
+      - name: Expo prebuild (+ pod install)
+        working-directory: apps/mobile
+        run: pnpm exec expo prebuild --clean --platform ios
+
+      - name: Show deployment targets
+        working-directory: apps/mobile/ios
+        run: |
+          ls
+          grep -h "IPHONEOS_DEPLOYMENT_TARGET" *.xcodeproj/project.pbxproj | sort | uniq -c
+          cat Podfile.properties.json || true
+
+      - name: xcodebuild (Release, iphoneos, signing disabled)
+        working-directory: apps/mobile/ios
+        run: |
+          workspace="$(ls -d *.xcworkspace | head -1)"
+          scheme="${workspace%.xcworkspace}"
+          echo "workspace=$workspace scheme=$scheme"
+          set +e
+          xcodebuild \
+            -workspace "$workspace" \
+            -scheme "$scheme" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination generic/platform=iOS \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            build > "$RUNNER_TEMP/xcodebuild.log" 2>&1
+          status=$?
+          set -e
+          if [ $status -ne 0 ]; then
+            echo "::group::errors"
+            grep -n -E "error:|\*\* BUILD FAILED|The following build commands failed" -A3 "$RUNNER_TEMP/xcodebuild.log" | head -300
+            echo "::endgroup::"
+            tail -150 "$RUNNER_TEMP/xcodebuild.log"
+            exit $status
+          fi
+          tail -20 "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+
+      - name: Package IPA
+        id: pkg
+        run: |
+          app="$(ls -d "$RUNNER_TEMP"/dd/Build/Products/Release-iphoneos/*.app | head -1)"
+          echo "app=$app"
+          name="$(basename "$app" .app)"
+          # Entitlements Xcode would have signed, with build variables resolved for a fake team.
+          ent_src="$(ls apps/mobile/ios/*/*.entitlements | head -1)"
+          echo "entitlements source: $ent_src"; cat "$ent_src"
+          python3 - "$ent_src" "$RUNNER_TEMP/app.entitlements" <<'PY'
+          import plistlib, sys
+          src, dst = sys.argv[1], sys.argv[2]
+          with open(src, "rb") as f:
+              ent = plistlib.load(f)
+          team = "T3HIKKIFAN"
+          bundle = "com.hikkifan.t3code"
+          def fix(v):
+              if isinstance(v, str):
+                  return v.replace("$(AppIdentifierPrefix)", team + ".").replace("$(TeamIdentifierPrefix)", team + ".")
+              if isinstance(v, list):
+                  return [fix(x) for x in v]
+              return v
+          ent = {k: fix(v) for k, v in ent.items()}
+          # Associated domains need Apple-signed provisioning; useless under TrollStore.
+          ent.pop("com.apple.developer.associated-domains", None)
+          ent["application-identifier"] = f"{team}.{bundle}"
+          ent["com.apple.developer.team-identifier"] = team
+          groups = ent.get("keychain-access-groups", [])
+          ent["keychain-access-groups"] = [f"{team}.{bundle}"] + [g for g in groups if g != f"{team}.{bundle}"]
+          ent["get-task-allow"] = False
+          with open(dst, "wb") as f:
+              plistlib.dump(ent, f)
+          print(plistlib.dumps(ent).decode())
+          PY
+          # Extensions are omitted in this build; drop any leftovers TrollStore would have to sign.
+          ls "$app/PlugIns" 2>/dev/null && rm -rf "$app/PlugIns" || true
+          rm -rf "$app/_CodeSignature" "$app/embedded.mobileprovision"
+          # Fakesign nested frameworks, then the main binary with the entitlements.
+          find "$app/Frameworks" -maxdepth 2 \( -name "*.framework" -o -name "*.dylib" \) 2>/dev/null | while read -r fw; do
+            if [ -d "$fw" ]; then bin="$fw/$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$fw/Info.plist")"; else bin="$fw"; fi
+            ldid -S "$bin" || true
+          done
+          ldid -S"$RUNNER_TEMP/app.entitlements" "$app/$name"
+          ldid -e "$app/$name"
+          plist="$app/Info.plist"
+          bundle_id="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$plist")"
+          version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$plist")"
+          build="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$plist")"
+          minos="$(/usr/libexec/PlistBuddy -c 'Print MinimumOSVersion' "$plist")"
+          vtool -show-build "$app/$name" | grep -E "minos|platform" || otool -l "$app/$name" | grep -A4 LC_BUILD_VERSION
+          echo "bundle=$bundle_id version=$version ($build) minos=$minos"
+          work="$RUNNER_TEMP/ipa"
+          mkdir -p "$work/Payload"
+          cp -R "$app" "$work/Payload/"
+          ipa="$RUNNER_TEMP/t3code-ios17-unsigned.ipa"
+          (cd "$work" && zip -qry "$ipa" Payload)
+          ls -l "$ipa"
+          shasum -a 256 "$ipa"
+          {
+            echo "ipa=$ipa"
+            echo "bundle=$bundle_id"
+            echo "version=$version"
+            echo "build=$build"
+            echo "minos=$minos"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### IPA"
+            echo "- bundle: \`$bundle_id\` version: \`$version ($build)\` MinimumOSVersion: \`$minos\`"
+            echo "- size: $(du -h "$ipa" | cut -f1)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: t3code-ios17-unsigned-ipa
+          path: ${{ steps.pkg.outputs.ipa }}
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IPA: ${{ steps.pkg.outputs.ipa }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+          BUNDLE: ${{ steps.pkg.outputs.bundle }}
+          MINOS: ${{ steps.pkg.outputs.minos }}
+        run: |
+          tag="ios17-unsigned-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" "$IPA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "T3 Code iOS 17 unsigned IPA ($tag)" \
+            --prerelease \
+            --notes "Unsigned (ldid fakesigned) Release build of branch ios17-compat @ ${GITHUB_SHA} for TrollStore.
+
+          - Bundle id: ${BUNDLE}
+          - Version: ${VERSION}
+          - MinimumOSVersion: ${MINOS}
+          - Built without widgets, share extension, push notifications, and Sign in with Apple (Personal Team configuration).
+          - OTA updates disabled; T3 Connect not configured, so pair over LAN/Tailscale."
+          echo "release=https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
